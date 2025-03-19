@@ -1,0 +1,118 @@
+name: Daily Google Drive to GitHub Sync
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs at midnight UTC daily
+  workflow_dispatch:  # Also allows manual triggering
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          
+      - name: Download from Google Drive
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          # Save credentials to file
+          echo "$GOOGLE_CREDENTIALS" > credentials.json
+          
+          # Create Python script for downloading
+          cat > download_file.py << 'EOF'
+          import os
+          import io
+          import sys
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          # Setup credentials
+          SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+          
+          try:
+              credentials = service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
+              drive_service = build('drive', 'v3', credentials=credentials)
+              
+              # Search for .ipynb files in the Leetcode folder
+              # You can replace this with a folder ID if you know it
+              folder_query = "name = 'Leetcode' and mimeType = 'application/vnd.google-apps.folder'"
+              folder_results = drive_service.files().list(
+                  q=folder_query,
+                  spaces='drive',
+                  fields='files(id, name)'
+              ).execute()
+              
+              folders = folder_results.get('files', [])
+              if not folders:
+                  print("Leetcode folder not found. Looking in root instead.")
+                  folder_id = 'root'
+              else:
+                  folder_id = folders[0]['id']
+                  print(f"Found Leetcode folder with ID: {folder_id}")
+              
+              # Search for .ipynb files in the folder
+              file_query = f"'{folder_id}' in parents and fileExtension = 'ipynb'"
+              results = drive_service.files().list(
+                  q=file_query,
+                  spaces='drive',
+                  fields="files(id, name, createdTime)",
+                  orderBy="createdTime desc"
+              ).execute()
+              
+              items = results.get('files', [])
+              if not items:
+                  print('No .ipynb files found.')
+                  sys.exit(0)
+              
+              # Print available files
+              print(f"Found {len(items)} .ipynb files:")
+              for i, item in enumerate(items):
+                  print(f"{i+1}. {item['name']} (Created: {item['createdTime']})")
+              
+              # Download the first file (newest by creation date)
+              file_id = items[0]['id']
+              file_name = items[0]['name']
+              
+              request = drive_service.files().get_media(fileId=file_id)
+              with io.FileIO(file_name, 'wb') as fh:
+                  downloader = MediaIoBaseDownload(fh, request)
+                  done = False
+                  while done is False:
+                      status, done = downloader.next_chunk()
+                      print(f"Download {int(status.progress() * 100)}%")
+              
+              print(f"Successfully downloaded: {file_name}")
+              
+              # Write filename to environment for later use
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
+                  f.write(f"filename={file_name}\n")
+                  
+          except Exception as error:
+              print(f"An error occurred: {error}")
+              sys.exit(1)
+          EOF
+          
+          # Run the script
+          python download_file.py
+          
+      - name: Push to GitHub
+        if: env.filename != ''
+        run: |
+          git config --global user.email "zainmalik1990@gmail.com"
+          git config --global user.name "ZainMalik"
+          git add "${{ env.filename }}"
+          git status
+          git diff --staged --quiet || git commit -m "Added ${{ env.filename }} from Google Drive"
+          git remote set-url origin https://${{ secrets.GH_TOKEN }}@github.com/ZainMalik/LeetCode-Solutions-by-Zython.git
+          git push
