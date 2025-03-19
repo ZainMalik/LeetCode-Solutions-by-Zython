@@ -2,7 +2,7 @@ name: Daily Google Drive to GitHub Sync
 on:
   schedule:
     - cron: '0 0 * * *'  # Runs at midnight UTC daily
-  workflow_dispatch:  # Also allows manual triggering
+  workflow_dispatch:  # Allows manual triggering
   
 permissions:
   contents: write
@@ -36,6 +36,7 @@ jobs:
           import os
           import io
           import sys
+          import json
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
@@ -47,8 +48,7 @@ jobs:
               credentials = service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
               drive_service = build('drive', 'v3', credentials=credentials)
               
-              # Search for .ipynb files in the Leetcode folder
-              # You can replace this with a folder ID if you know it
+              # Find "Leetcode" folder
               folder_query = "name = 'Leetcode' and mimeType = 'application/vnd.google-apps.folder'"
               folder_results = drive_service.files().list(
                   q=folder_query,
@@ -64,13 +64,13 @@ jobs:
                   folder_id = folders[0]['id']
                   print(f"Found Leetcode folder with ID: {folder_id}")
               
-              # Search for .ipynb files in the folder
+              # Get all .ipynb files sorted by NAME (instead of createdTime)
               file_query = f"'{folder_id}' in parents and fileExtension = 'ipynb'"
               results = drive_service.files().list(
                   q=file_query,
                   spaces='drive',
-                  fields="files(id, name, createdTime)",
-                  orderBy="createdTime desc"
+                  fields="files(id, name)",
+                  orderBy="name"
               ).execute()
               
               items = results.get('files', [])
@@ -79,22 +79,43 @@ jobs:
                   sys.exit(0)
               
               # Print available files
-              print(f"Found {len(items)} .ipynb files:")
-              for i, item in enumerate(items):
-                  print(f"{i+1}. {item['name']} (Created: {item['createdTime']})")
-              
-              # Download the first file (newest by creation date)
-              file_id = items[0]['id']
-              file_name = items[0]['name']
-              
+              filenames = [item["name"] for item in items]
+              print(f"Found {len(filenames)} .ipynb files:")
+              for i, name in enumerate(filenames):
+                  print(f"{i+1}. {name}")
+
+              # Keep track of the last uploaded file
+              LAST_FILE_TRACKER = "last_uploaded.json"
+
+              # Load last uploaded file
+              last_uploaded = None
+              if os.path.exists(LAST_FILE_TRACKER):
+                  with open(LAST_FILE_TRACKER, "r") as f:
+                      last_uploaded = json.load(f).get("last_file")
+
+              # Get the next file in sequence
+              if last_uploaded in filenames:
+                  last_index = filenames.index(last_uploaded)
+                  next_index = (last_index + 1) % len(filenames)
+              else:
+                  next_index = 0  # Start from the first file if no history
+
+              file_id = items[next_index]['id']
+              file_name = filenames[next_index]
+
+              # Save this file as last uploaded
+              with open(LAST_FILE_TRACKER, "w") as f:
+                  json.dump({"last_file": file_name}, f)
+
+              # Download the selected file
               request = drive_service.files().get_media(fileId=file_id)
               with io.FileIO(file_name, 'wb') as fh:
                   downloader = MediaIoBaseDownload(fh, request)
                   done = False
-                  while done is False:
+                  while not done:
                       status, done = downloader.next_chunk()
                       print(f"Download {int(status.progress() * 100)}%")
-              
+
               print(f"Successfully downloaded: {file_name}")
               
               # Write filename to environment for later use
