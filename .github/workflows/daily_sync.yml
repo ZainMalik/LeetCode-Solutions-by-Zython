@@ -135,7 +135,7 @@ jobs:
         run: |
           git config --global user.email "zainmalik1990@gmail.com"
           git config --global user.name "ZainMalik"
-          git add "${{ env.filename }}"
+          git add "${{ env.filename }}" last_uploaded.json
           git status
           git diff --staged --quiet || git commit -m "Added ${{ env.filename }}"
           git remote set-url origin https://${{ secrets.GD_TO_GH_KEY }}@github.com/ZainMalik/LeetCode-Solutions-by-Zython.git
